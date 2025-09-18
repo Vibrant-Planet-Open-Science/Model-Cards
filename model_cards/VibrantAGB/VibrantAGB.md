@@ -7,6 +7,7 @@ Jump to section:
 - [Metrics](#metrics)
 - [Evaluation data](#evaluation-data)
 - [Training data](#training-data)
+- [Training process](#training-process)
 - [Quantitative analyses](#quantitative-analyses)
 - [Ethical considerations](#ethical-considerations)
 - [Caveats and recommendations](#caveats-and-recommendations)
