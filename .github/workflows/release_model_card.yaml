@@ -5,93 +5,11 @@ on:
     branches:
       - 'main'
     types:
-      - opened
-      - reopened
-      - synchronize
       - closed
     
 jobs:
-  build-pdf:
-    if: startsWith(github.event.pull_request.head.ref, 'release/')
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-
-      - name: Extract Model Name and Version
-        id: parse_branch
-        run: |
-          BRANCH_NAME="${{ github.event.pull_request.head.ref }}"
-          MODEL_INFO=$(echo "$BRANCH_NAME" | sed -n 's/release\/\([a-zA-Z0-9-]\+\)\/v\([0-9.]\+\)/\1 \2/p')
-          
-          if [[ -z "$MODEL_INFO" ]]; then
-            echo "::error::Could not parse model name and version from branch name: $BRANCH_NAME"
-            exit 1
-          fi
-          
-          MODEL_NAME=$(echo "$MODEL_INFO" | awk '{print $1}')
-          MODEL_VERSION=$(echo "$MODEL_INFO" | awk '{print $2}')
-          
-          echo "MODEL_NAME=$MODEL_NAME" >> $GITHUB_OUTPUT
-          echo "MODEL_VERSION=$MODEL_VERSION" >> $GITHUB_OUTPUT
-          echo "MODEL_FILE_PATH=model_cards/$MODEL_NAME/$MODEL_NAME.md" >> $GITHUB_OUTPUT
-
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.x'
-
-      - name: Preprocess Markdown with Inlined Python Script
-        run: |
-          python - ${{ steps.parse_branch.outputs.MODEL_FILE_PATH }} <<EOF > model_cards/${{ steps.parse_branch.outputs.MODEL_NAME }}/processed_model_card.md
-          import sys
-          import re
-          
-          def adjust_images(markdown_file):
-              with open(markdown_file) as file:
-                  content = file.read()
-              
-              pattern = r'<img src="([^"]+)" alt="([^"]+)" width="([^"]+)"/>'
-              def replacement_func(match):
-                  image_name = match.group(1)
-                  alt_text = match.group(2)
-                  width = match.group(3)
-                  markdown_dir = sys.argv[1].rsplit('/', 1)[0]
-                  relative_path = f"{markdown_dir}/{image_name}"
-                  return f"![{alt_text}]({relative_path}){{width={width}}}"
-              
-              new_content = re.sub(pattern, replacement_func, content)
-              
-              print(new_content)
-          
-          if __name__ == "__main__":
-              input_file = sys.argv[1]
-              adjust_images(input_file)
-          EOF
-
-      - name: Generate PDF with Pandoc and Tectonic
-        run: |
-          docker run --rm \
-            --volume "${{ github.workspace }}:/data" \
-            --workdir /data \
-            pandoc/extra:latest \
-            --pdf-engine=tectonic \
-            --variable=geometry:margin=1in \
-            --output="${{ steps.parse_branch.outputs.MODEL_NAME }}-v${{ steps.parse_branch.outputs.MODEL_VERSION }}.pdf" \
-            "model_cards/${{ steps.parse_branch.outputs.MODEL_NAME }}/processed_model_card.md"
-
-      - name: Upload PDF Artifact for Review
-        uses: actions/upload-artifact@v4
-        with:
-          name: model-card-pdf
-          path: ${{ steps.parse_branch.outputs.MODEL_NAME }}-v${{ steps.parse_branch.outputs.MODEL_VERSION }}.pdf
-
   release:
     if: startsWith(github.event.pull_request.head.ref, 'release/') && github.event.pull_request.merged == true
-    needs: build-pdf
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -120,11 +38,6 @@ jobs:
           echo "MODEL_VERSION=$MODEL_VERSION" >> $GITHUB_OUTPUT
           echo "MODEL_FILE_PATH=model_cards/$MODEL_NAME/$MODEL_NAME.md" >> $GITHUB_OUTPUT
 
-      - name: Download PDF Artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: model-card-pdf
-
       - name: Delete Existing Release
         id: delete_release
         env:
@@ -148,7 +61,6 @@ jobs:
           MODEL_NAME="${{ steps.parse_branch.outputs.MODEL_NAME }}"
           VERSION="${{ steps.parse_branch.outputs.MODEL_VERSION }}"
           RELEASE_TAG="${{ steps.parse_branch.outputs.MODEL_NAME }}-v${{ steps.parse_branch.outputs.MODEL_VERSION }}"
-          PDF_FILENAME="${{ steps.parse_branch.outputs.MODEL_NAME }}-v${{ steps.parse_branch.outputs.MODEL_VERSION }}.pdf"
           
           RELEASE_NOTES=$(cat <<-END
           **Model Card Release**
@@ -156,9 +68,8 @@ jobs:
           **Model:** $MODEL_NAME
           **Version:** $VERSION
 
-          [View Markdown](${{ github.server_url }}/${{ github.repository }}/blob/$RELEASE_TAG/${{ steps.parse_branch.outputs.MODEL_FILE_PATH }})
+          [View Model Card](${{ github.server_url }}/${{ github.repository }}/blob/$RELEASE_TAG/${{ steps.parse_branch.outputs.MODEL_FILE_PATH }})
 
-          [Download PDF](${{ github.server_url }}/${{ github.repository }}/releases/download/$RELEASE_TAG/$PDF_FILENAME)
           END
           )
 
@@ -170,6 +81,3 @@ jobs:
             --target ${{ github.event.pull_request.merge_commit_sha }} \
             --prerelease=false \
             --draft=false
-          
-          # Upload the PDF file to the new release
-          gh release upload "$RELEASE_TAG" "$PDF_FILENAME" --clobber
