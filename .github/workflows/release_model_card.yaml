@@ -4,12 +4,72 @@ on:
   pull_request:
     branches:
       - 'main'
+      - 'release/**'
     types:
       - closed
     
 jobs:
+  check_if_release_should_proceed:
+    runs-on: ubuntu-latest
+    outputs:
+      should_proceed: ${{ steps.check.outputs.should_proceed }}
+      model_name: ${{ steps.check.outputs.model_name }}
+      model_version: ${{ steps.check.outputs.model_version }}
+
+    steps:
+      - name: Checkout Repository
+        if: github.event.pull_request.merged == true
+        uses: actions/checkout@v4
+
+      - name: Parse Branch and Check Conditions
+        id: check
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BASE_BRANCH="${{ github.event.pull_request.base.ref }}"
+          HEAD_BRANCH="${{ github.event.pull_request.head.ref }}"
+          
+          if [[ "$BASE_BRANCH" == "main" ]]; then
+            TARGET_BRANCH_TO_PARSE="$HEAD_BRANCH"
+          else
+            TARGET_BRANCH_TO_PARSE="$BASE_BRANCH"
+          fi
+          
+          MODEL_INFO=$(echo "$TARGET_BRANCH_TO_PARSE" | sed -n 's/release\/\([a-zA-Z0-9-]\+\)\/v\([0-9.]\+\)/\1 \2/p')
+          
+          if [[ -z "$MODEL_INFO" ]]; then
+            echo "::error::Could not parse model name and version from branch name: $TARGET_BRANCH_TO_PARSE"
+            echo "should_proceed=false" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          MODEL_NAME=$(echo "$MODEL_INFO" | awk '{print $1}')
+          MODEL_VERSION=$(echo "$MODEL_INFO" | awk '{print $2}')
+          
+          echo "model_name=$MODEL_NAME" >> "$GITHUB_OUTPUT"
+          echo "model_version=$MODEL_VERSION" >> "$GITHUB_OUTPUT"
+
+          if [[ "$BASE_BRANCH" == "main" ]]; then
+            echo "::notice::PR merged to 'main'. Proceeding with release."
+            echo "should_proceed=true" >> "$GITHUB_OUTPUT"
+          
+          elif [[ "$BASE_BRANCH" == release/* ]]; then
+            echo "::notice::PR merged to a 'release/*' branch. Checking for existing release."
+            
+            RELEASE_TAG="${MODEL_NAME}-v${MODEL_VERSION}"
+            
+            if gh release view "$RELEASE_TAG" --repo ${{ github.repository }} >/dev/null 2>&1; then
+              echo "::notice::Release '$RELEASE_TAG' found. Proceeding with update."
+              echo "should_proceed=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "::warning::No existing release found. Skipping update."
+              echo "should_proceed=false" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
   release:
-    if: startsWith(github.event.pull_request.head.ref, 'release/') && github.event.pull_request.merged == true
+    needs: check_if_release_should_proceed
+    if: needs.check_if_release_should_proceed.outputs.should_proceed == 'true' && github.event.pull_request.merged == true
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -20,32 +80,24 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.merge_commit_sha }}
 
-      - name: Extract Model Name and Version
-        id: parse_branch
+      - name: Set Release Variables
+        id: set_vars
         run: |
-          BRANCH_NAME="${{ github.event.pull_request.head.ref }}"
-          MODEL_INFO=$(echo "$BRANCH_NAME" | sed -n 's/release\/\([a-zA-Z0-9-]\+\)\/v\([0-9.]\+\)/\1 \2/p')
-          
-          if [[ -z "$MODEL_INFO" ]]; then
-            echo "::error::Could not parse model name and version from branch name: $BRANCH_NAME"
-            exit 1
-          fi
-          
-          MODEL_NAME=$(echo "$MODEL_INFO" | awk '{print $1}')
-          MODEL_VERSION=$(echo "$MODEL_INFO" | awk '{print $2}')
-          
+          MODEL_NAME="${{ needs.check_if_release_should_proceed.outputs.model_name }}"
+          VERSION="${{ needs.check_if_release_should_proceed.outputs.model_version }}"
+          MODEL_FILE_PATH="model_cards/$MODEL_NAME/$MODEL_NAME.md"
+
           echo "MODEL_NAME=$MODEL_NAME" >> $GITHUB_OUTPUT
-          echo "MODEL_VERSION=$MODEL_VERSION" >> $GITHUB_OUTPUT
-          echo "MODEL_FILE_PATH=model_cards/$MODEL_NAME/$MODEL_NAME.md" >> $GITHUB_OUTPUT
+          echo "MODEL_VERSION=$VERSION" >> $GITHUB_OUTPUT
+          echo "MODEL_FILE_PATH=$MODEL_FILE_PATH" >> $GITHUB_OUTPUT
 
       - name: Delete Existing Release
-        id: delete_release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          RELEASE_TAG="${{ steps.parse_branch.outputs.MODEL_NAME }}-v${{ steps.parse_branch.outputs.MODEL_VERSION }}"
+          RELEASE_TAG="${{ needs.check_if_release_should_proceed.outputs.model_name }}-v${{ needs.check_if_release_should_proceed.outputs.model_version }}"
           
-          # Check if the release exists before attempting deletion
+          # This is the if/else check inside the step
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             echo "Release '$RELEASE_TAG' found. Deleting it..."
             gh release delete "$RELEASE_TAG" --yes --cleanup-tag
@@ -54,26 +106,21 @@ jobs:
           fi
 
       - name: Create New Release
-        id: create_release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          MODEL_NAME="${{ steps.parse_branch.outputs.MODEL_NAME }}"
-          VERSION="${{ steps.parse_branch.outputs.MODEL_VERSION }}"
-          RELEASE_TAG="${{ steps.parse_branch.outputs.MODEL_NAME }}-v${{ steps.parse_branch.outputs.MODEL_VERSION }}"
+          MODEL_NAME="${{ needs.check_if_release_should_proceed.outputs.model_name }}"
+          VERSION="${{ needs.check_if_release_should_proceed.outputs.model_version }}"
+          RELEASE_TAG="${{ needs.check_if_release_should_proceed.outputs.model_name }}-v${{ needs.check_if_release_should_proceed.outputs.model_version }}"
           
           RELEASE_NOTES=$(cat <<-END
           **Model Card Release**
-
           **Model:** $MODEL_NAME
           **Version:** $VERSION
-
-          [View Model Card](${{ github.server_url }}/${{ github.repository }}/blob/$RELEASE_TAG/${{ steps.parse_branch.outputs.MODEL_FILE_PATH }})
-
+          [View Model Card](${{ github.server_url }}/${{ github.repository }}/blob/$RELEASE_TAG/${{ steps.set_vars.outputs.MODEL_FILE_PATH }})
           END
           )
 
-          # Create the new release with the correct commit hash
           gh release create "$RELEASE_TAG" \
             --notes "$RELEASE_NOTES" \
             --title "$MODEL_NAME v$VERSION Release" \
