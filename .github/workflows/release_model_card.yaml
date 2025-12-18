@@ -3,61 +3,104 @@ name: Model Card Release
 on:
   pull_request:
     branches:
-      - 'main'
-      - 'release/**'
+      - "main"
+      - "release/**"
     types:
       - closed
-    
+
+  workflow_dispatch:
+    inputs:
+      model_family:
+        description: "Model family (e.g., llm, vision)"
+        required: true
+        type: string
+      model_name:
+        description: "Model name (e.g., gpt-neo, resnet-50)"
+        required: true
+        type: string
+      model_version:
+        description: "Semantic version (e.g., 1.0.0)"
+        required: true
+        type: string
+
 jobs:
   check_if_release_should_proceed:
     runs-on: ubuntu-latest
     outputs:
-      should_proceed: ${{ steps.check.outputs.should_proceed }}
-      model_name: ${{ steps.check.outputs.model_name }}
-      model_version: ${{ steps.check.outputs.model_version }}
+      should_proceed: ${{ steps.check.outputs.should_proceed || steps.check_pr.outputs.should_proceed }}
+      model_family: ${{ steps.check.outputs.model_family || steps.check_pr.outputs.model_family }}
+      model_name: ${{ steps.check.outputs.model_name || steps.check_pr.outputs.model_name }}
+      model_version: ${{ steps.check.outputs.model_version || steps.check_pr.outputs.model_version }}
 
     steps:
       - name: Checkout Repository
-        if: github.event.pull_request.merged == true
+        if: github.event_name == 'workflow_dispatch' || github.event.pull_request.merged == true
         uses: actions/checkout@v4
 
-      - name: Parse Branch and Check Conditions
+      - name: Set Variables from Manual Dispatch
         id: check
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          MODEL_FAMILY="${{ inputs.model_family }}"
+          MODEL_NAME="${{ inputs.model_name }}"
+          MODEL_VERSION="${{ inputs.model_version }}"
+          MODEL_FILE_PATH="model_cards/$MODEL_FAMILY/$MODEL_NAME.md"
+
+          if [[ ! -f "$MODEL_FILE_PATH" ]]; then
+            echo "::error::Model card file not found: $MODEL_FILE_PATH"
+            echo "should_proceed=false" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          echo "::notice::Manual dispatch triggered for $MODEL_FAMILY/$MODEL_NAME v$MODEL_VERSION"
+          echo "model_family=$MODEL_FAMILY" >> "$GITHUB_OUTPUT"
+          echo "model_name=$MODEL_NAME" >> "$GITHUB_OUTPUT"
+          echo "model_version=$MODEL_VERSION" >> "$GITHUB_OUTPUT"
+          echo "should_proceed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Parse Branch and Check Conditions
+        id: check_pr
+        if: github.event_name == 'pull_request'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           BASE_BRANCH="${{ github.event.pull_request.base.ref }}"
           HEAD_BRANCH="${{ github.event.pull_request.head.ref }}"
-          
+
           if [[ "$BASE_BRANCH" == "main" ]]; then
             TARGET_BRANCH_TO_PARSE="$HEAD_BRANCH"
           else
             TARGET_BRANCH_TO_PARSE="$BASE_BRANCH"
           fi
-          
-          MODEL_INFO=$(echo "$TARGET_BRANCH_TO_PARSE" | sed -n 's/release\/\([a-zA-Z0-9-]\+\)\/v\([0-9.]\+\)/\1 \2/p')
-          
+
+          MODEL_INFO=$(echo "$TARGET_BRANCH_TO_PARSE" | sed -n 's/release\/\([a-zA-Z0-9_-]\+\)\/\([a-zA-Z0-9_-]\+\)\/v\([0-9.]\+\)/\1 \2 \3/p')
+
           if [[ -z "$MODEL_INFO" ]]; then
-            echo "::error::Could not parse model name and version from branch name: $TARGET_BRANCH_TO_PARSE"
+            echo "::error::Could not parse model family, name, and version from branch name: $TARGET_BRANCH_TO_PARSE"
+            echo "::error::Expected format: release/{model_family}/{model_name}/v{semantic_version}"
             echo "should_proceed=false" >> "$GITHUB_OUTPUT"
             exit 1
           fi
 
-          MODEL_NAME=$(echo "$MODEL_INFO" | awk '{print $1}')
-          MODEL_VERSION=$(echo "$MODEL_INFO" | awk '{print $2}')
-          
+          MODEL_FAMILY=$(echo "$MODEL_INFO" | awk '{print $1}')
+          MODEL_NAME=$(echo "$MODEL_INFO" | awk '{print $2}')
+          MODEL_VERSION=$(echo "$MODEL_INFO" | awk '{print $3}')
+
+          echo "model_family=$MODEL_FAMILY" >> "$GITHUB_OUTPUT"
           echo "model_name=$MODEL_NAME" >> "$GITHUB_OUTPUT"
           echo "model_version=$MODEL_VERSION" >> "$GITHUB_OUTPUT"
 
           if [[ "$BASE_BRANCH" == "main" ]]; then
             echo "::notice::PR merged to 'main'. Proceeding with release."
             echo "should_proceed=true" >> "$GITHUB_OUTPUT"
-          
+
           elif [[ "$BASE_BRANCH" == release/* ]]; then
             echo "::notice::PR merged to a 'release/*' branch. Checking for existing release."
-            
-            RELEASE_TAG="${MODEL_NAME}-v${MODEL_VERSION}"
-            
+
+            RELEASE_TAG="${MODEL_FAMILY}-${MODEL_NAME}-v${MODEL_VERSION}"
+
             if gh release view "$RELEASE_TAG" --repo ${{ github.repository }} >/dev/null 2>&1; then
               echo "::notice::Release '$RELEASE_TAG' found. Proceeding with update."
               echo "should_proceed=true" >> "$GITHUB_OUTPUT"
@@ -69,7 +112,7 @@ jobs:
 
   release:
     needs: check_if_release_should_proceed
-    if: needs.check_if_release_should_proceed.outputs.should_proceed == 'true' && github.event.pull_request.merged == true
+    if: needs.check_if_release_should_proceed.outputs.should_proceed == 'true' && (github.event_name == 'workflow_dispatch' || github.event.pull_request.merged == true)
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -78,15 +121,17 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.merge_commit_sha }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.ref || github.event.pull_request.merge_commit_sha }}
 
       - name: Set Release Variables
         id: set_vars
         run: |
+          MODEL_FAMILY="${{ needs.check_if_release_should_proceed.outputs.model_family }}"
           MODEL_NAME="${{ needs.check_if_release_should_proceed.outputs.model_name }}"
           VERSION="${{ needs.check_if_release_should_proceed.outputs.model_version }}"
-          MODEL_FILE_PATH="model_cards/$MODEL_NAME/$MODEL_NAME.md"
+          MODEL_FILE_PATH="model_cards/$MODEL_FAMILY/$MODEL_NAME.md"
 
+          echo "MODEL_FAMILY=$MODEL_FAMILY" >> $GITHUB_OUTPUT
           echo "MODEL_NAME=$MODEL_NAME" >> $GITHUB_OUTPUT
           echo "MODEL_VERSION=$VERSION" >> $GITHUB_OUTPUT
           echo "MODEL_FILE_PATH=$MODEL_FILE_PATH" >> $GITHUB_OUTPUT
@@ -95,8 +140,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          RELEASE_TAG="${{ needs.check_if_release_should_proceed.outputs.model_name }}-v${{ needs.check_if_release_should_proceed.outputs.model_version }}"
-          
+          RELEASE_TAG="${{ needs.check_if_release_should_proceed.outputs.model_family }}-${{ needs.check_if_release_should_proceed.outputs.model_name }}-v${{ needs.check_if_release_should_proceed.outputs.model_version }}"
+
           # This is the if/else check inside the step
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             echo "Release '$RELEASE_TAG' found. Deleting it..."
@@ -109,22 +154,25 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          MODEL_FAMILY="${{ needs.check_if_release_should_proceed.outputs.model_family }}"
           MODEL_NAME="${{ needs.check_if_release_should_proceed.outputs.model_name }}"
           VERSION="${{ needs.check_if_release_should_proceed.outputs.model_version }}"
-          RELEASE_TAG="${{ needs.check_if_release_should_proceed.outputs.model_name }}-v${{ needs.check_if_release_should_proceed.outputs.model_version }}"
-          
+          RELEASE_TAG="${{ needs.check_if_release_should_proceed.outputs.model_family }}-${{ needs.check_if_release_should_proceed.outputs.model_name }}-v${{ needs.check_if_release_should_proceed.outputs.model_version }}"
+
           RELEASE_NOTES=$(cat <<-END
           **Model Card Release**
-          **Model:** $MODEL_NAME
+          **Model:** $MODEL_FAMILY - $MODEL_NAME
           **Version:** $VERSION
           [View Model Card](${{ github.server_url }}/${{ github.repository }}/blob/$RELEASE_TAG/${{ steps.set_vars.outputs.MODEL_FILE_PATH }})
           END
           )
 
+          TARGET_SHA="${{ github.event_name == 'workflow_dispatch' && github.sha || github.event.pull_request.merge_commit_sha }}"
+
           gh release create "$RELEASE_TAG" \
             --notes "$RELEASE_NOTES" \
-            --title "$MODEL_NAME v$VERSION Release" \
+            --title "$MODEL_FAMILY - $MODEL_NAME v$VERSION Release" \
             --repo ${{ github.repository }} \
-            --target ${{ github.event.pull_request.merge_commit_sha }} \
+            --target "$TARGET_SHA" \
             --prerelease=false \
             --draft=false
