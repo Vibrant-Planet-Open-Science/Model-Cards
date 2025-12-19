@@ -59,7 +59,7 @@ Additionally, the model was not developed to apply variable merchantability spec
 Finally, this model allocates aboveground live tree biomass into four product categories. It was not designed to allow confident quantification of wood quality nor volume that might be generated from salvage logging in stands affected by wildfire, pests, or other natural disturbances where a significant proportion of tree mortality has occurred.
 
 ## Factors
-The key factors shaping the development and application of ForestProducts include reliance upon a forest structure model, VibrantForests, to generate the necessary forest attributes in wall-to-wall maps, and the definitions of forest product categories derived from the FIA program.  
+The key factors shaping the development and application of ForestProducts include reliance upon a forest structure model to generate the necessary forest attributes in wall-to-wall maps, and the definitions of forest product categories derived from the FIA program.  
 
 Biogeographic factors that influence tree form and the allocation of AGB into different product categories were incorporated by including forest type and ecoregion as key model inputs.
 
