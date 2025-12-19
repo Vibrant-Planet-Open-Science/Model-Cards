@@ -75,18 +75,29 @@ jobs:
             TARGET_BRANCH_TO_PARSE="$BASE_BRANCH"
           fi
 
+          # Try format with model family: release/{model_family}/{model_name}/v{version}
           MODEL_INFO=$(echo "$TARGET_BRANCH_TO_PARSE" | sed -n 's/release\/\([a-zA-Z0-9_-]\+\)\/\([a-zA-Z0-9_-]\+\)\/v\([0-9.]\+\)/\1 \2 \3/p')
 
-          if [[ -z "$MODEL_INFO" ]]; then
-            echo "::error::Could not parse model family, name, and version from branch name: $TARGET_BRANCH_TO_PARSE"
-            echo "::error::Expected format: release/{model_family}/{model_name}/v{semantic_version}"
-            echo "should_proceed=false" >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
+          if [[ -n "$MODEL_INFO" ]]; then
+            MODEL_FAMILY=$(echo "$MODEL_INFO" | awk '{print $1}')
+            MODEL_NAME=$(echo "$MODEL_INFO" | awk '{print $2}')
+            MODEL_VERSION=$(echo "$MODEL_INFO" | awk '{print $3}')
+          else
+            # Try format without model family: release/{model_name}/v{version}
+            MODEL_INFO=$(echo "$TARGET_BRANCH_TO_PARSE" | sed -n 's/release\/\([a-zA-Z0-9_-]\+\)\/v\([0-9.]\+\)/\1 \2/p')
 
-          MODEL_FAMILY=$(echo "$MODEL_INFO" | awk '{print $1}')
-          MODEL_NAME=$(echo "$MODEL_INFO" | awk '{print $2}')
-          MODEL_VERSION=$(echo "$MODEL_INFO" | awk '{print $3}')
+            if [[ -n "$MODEL_INFO" ]]; then
+              # Without a family, model family and name are treated as the same
+              MODEL_NAME=$(echo "$MODEL_INFO" | awk '{print $1}')
+              MODEL_FAMILY="$MODEL_NAME"
+              MODEL_VERSION=$(echo "$MODEL_INFO" | awk '{print $2}')
+            else
+              echo "::error::Could not parse branch name: $TARGET_BRANCH_TO_PARSE"
+              echo "::error::Expected format: release/{model_family}/{model_name}/v{version} or release/{model_name}/v{version}"
+              echo "should_proceed=false" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+          fi
 
           echo "model_family=$MODEL_FAMILY" >> "$GITHUB_OUTPUT"
           echo "model_name=$MODEL_NAME" >> "$GITHUB_OUTPUT"
@@ -99,7 +110,12 @@ jobs:
           elif [[ "$BASE_BRANCH" == release/* ]]; then
             echo "::notice::PR merged to a 'release/*' branch. Checking for existing release."
 
-            RELEASE_TAG="${MODEL_FAMILY}-${MODEL_NAME}-v${MODEL_VERSION}"
+            # Handle identical model family and model name to avoid duplicate strings
+            if [[ "$MODEL_FAMILY" == "$MODEL_NAME" ]]; then
+              RELEASE_TAG="${MODEL_NAME}-v${MODEL_VERSION}"
+            else
+              RELEASE_TAG="${MODEL_FAMILY}-${MODEL_NAME}-v${MODEL_VERSION}"
+            fi
 
             if gh release view "$RELEASE_TAG" --repo ${{ github.repository }} >/dev/null 2>&1; then
               echo "::notice::Release '$RELEASE_TAG' found. Proceeding with update."
@@ -131,16 +147,27 @@ jobs:
           VERSION="${{ needs.check_if_release_should_proceed.outputs.model_version }}"
           MODEL_FILE_PATH="model_cards/$MODEL_FAMILY/$MODEL_NAME.md"
 
+          # Handle identical model family and model name to avoid duplicate strings
+          if [[ "$MODEL_FAMILY" == "$MODEL_NAME" ]]; then
+            RELEASE_TAG="${MODEL_NAME}-v${VERSION}"
+            MODEL_DISPLAY_NAME="$MODEL_NAME"
+          else
+            RELEASE_TAG="${MODEL_FAMILY}-${MODEL_NAME}-v${VERSION}"
+            MODEL_DISPLAY_NAME="$MODEL_FAMILY - $MODEL_NAME"
+          fi
+
           echo "MODEL_FAMILY=$MODEL_FAMILY" >> $GITHUB_OUTPUT
           echo "MODEL_NAME=$MODEL_NAME" >> $GITHUB_OUTPUT
           echo "MODEL_VERSION=$VERSION" >> $GITHUB_OUTPUT
           echo "MODEL_FILE_PATH=$MODEL_FILE_PATH" >> $GITHUB_OUTPUT
+          echo "RELEASE_TAG=$RELEASE_TAG" >> $GITHUB_OUTPUT
+          echo "MODEL_DISPLAY_NAME=$MODEL_DISPLAY_NAME" >> $GITHUB_OUTPUT
 
       - name: Delete Existing Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          RELEASE_TAG="${{ needs.check_if_release_should_proceed.outputs.model_family }}-${{ needs.check_if_release_should_proceed.outputs.model_name }}-v${{ needs.check_if_release_should_proceed.outputs.model_version }}"
+          RELEASE_TAG="${{ steps.set_vars.outputs.RELEASE_TAG }}"
 
           # This is the if/else check inside the step
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
@@ -154,14 +181,13 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          MODEL_FAMILY="${{ needs.check_if_release_should_proceed.outputs.model_family }}"
-          MODEL_NAME="${{ needs.check_if_release_should_proceed.outputs.model_name }}"
-          VERSION="${{ needs.check_if_release_should_proceed.outputs.model_version }}"
-          RELEASE_TAG="${{ needs.check_if_release_should_proceed.outputs.model_family }}-${{ needs.check_if_release_should_proceed.outputs.model_name }}-v${{ needs.check_if_release_should_proceed.outputs.model_version }}"
+          VERSION="${{ steps.set_vars.outputs.MODEL_VERSION }}"
+          RELEASE_TAG="${{ steps.set_vars.outputs.RELEASE_TAG }}"
+          MODEL_DISPLAY_NAME="${{ steps.set_vars.outputs.MODEL_DISPLAY_NAME }}"
 
           RELEASE_NOTES=$(cat <<-END
           **Model Card Release**
-          **Model:** $MODEL_FAMILY - $MODEL_NAME
+          **Model:** $MODEL_DISPLAY_NAME
           **Version:** $VERSION
           [View Model Card](${{ github.server_url }}/${{ github.repository }}/blob/$RELEASE_TAG/${{ steps.set_vars.outputs.MODEL_FILE_PATH }})
           END
@@ -171,7 +197,7 @@ jobs:
 
           gh release create "$RELEASE_TAG" \
             --notes "$RELEASE_NOTES" \
-            --title "$MODEL_FAMILY - $MODEL_NAME v$VERSION Release" \
+            --title "$MODEL_DISPLAY_NAME v$VERSION Release" \
             --repo ${{ github.repository }} \
             --target "$TARGET_SHA" \
             --prerelease=false \
