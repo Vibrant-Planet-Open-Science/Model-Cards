@@ -14,28 +14,38 @@ Jump to section:
 - [Acknowledgements](#acknowledgements)
 
 ## Overview
-ForestProducts is a multi-target regression model developed by [Vibrant Planet](https://www.vibrantplanet.net/) to allocate aboveground live tree biomass (AGB) into four forest product categories. ForestProducts is integrated into a pipeline used to estimate forest attributes from remote sensing called VibrantForests.
+ForestProducts is a neural network developed by [Vibrant Planet](https://www.vibrantplanet.net/) to allocate aboveground live tree biomass (AGB) into four forest product categories and to estimate sawtimber boardfoot volume. ForestProducts is integrated into a pipeline used to estimate forest attributes from remote sensing called VibrantForests.
 
 ### Contributors
 David Diaz, Luke Zachmann, Tony Chang, Nathan Rutenbeck, Vincent Landau, Mike Cartmill, Scott Conway
 
 ### Model date
-November 2025
+October 2026
 
 ### Model version
-1.0.0
+2.0.0
 
 ### Model type
-ForestProducts is a series of `HistGradientBoostingRegressor` models combined in a `RegressorChain` using `scikit-learn`. 
+ForestProducts is a multilayer perceptron (MLP) built in PyTorch and exported to ONNX for inference. It has two hidden layers (128 and 64 units wide) and a learned 8-dimensional embedding for each of its two categorical inputs, forest type group and ecoregion.
 
 ### Model details
-ForestProducts allocates AGB (provided as an input feature) into four mutually-exclusive forest product categories: sawtimber, pulp, sub-merchantable, and non-merchantable. All four product volumes are predicted in units of metric tons per hectare, and sawtimber is also estimated in units of Scribner boardfoot volume (MBF, thousands of board feet) per hectare.
+ForestProducts allocates AGB (provided as an input feature) into four mutually-exclusive forest product categories: sawtimber, pulp, sub-merchantable, and non-merchantable. All four products are estimated in units of metric tons per hectare, and sawtimber is also estimated as boardfoot volume (MBF, thousands of board feet) per hectare.
 
-The definitions of these four forest product categories are derived from specifications used in the US Forest Service's Forest Inventory & Analysis (FIA) program:
-* Sawtimber: biomass in the bole of timber species trees with diameter at breast height (DBH) ≥ 9" for softwood (or DBH ≥ 11" for hardwood) timber species from a 1' stump up to a minimum top diameter of 7" for softwood (or 9" for hardwood) timber species.
-* Pulp: bole biomass in timber species with DBH ≥ 5" from a 1' stump up to a minimum top diameter of 4", excluding any biomass that qualifies as sawtimber. 
-* Submerchantable: woody biomass in tops and branches of all trees; all aboveground woody biomass for all trees with DBH < 5"; and all aboveground woody biomass of woodland (i.e., non-timber/non-commercial) species.  
-* Nonmerchantable: biomass in foliage; biomass in stumps of timber species trees with DBH ≥ 5". 
+The definitions of these four forest product categories are derived from the biomass components reported by the US Forest Service's Forest Inventory & Analysis (FIA) program:
+* Sawtimber: wood biomass in the sawlog portion of the bole of timber species trees with diameter at breast height (DBH) ≥ 9" for softwoods (or DBH ≥ 11" for hardwoods), from a 1' stump up to a minimum top diameter of 7" for softwoods (or 9" for hardwoods).
+* Pulp: wood biomass in the bole of timber species trees with DBH ≥ 5" from a 1' stump up to a minimum top diameter of 4", excluding any biomass that qualifies as sawtimber.
+* Submerchantable: woody biomass (including its bark) in the tops and branches of all trees; all aboveground woody biomass of trees with DBH < 5"; and all aboveground woody biomass of woodland (i.e., non-timber) species.
+* Nonmerchantable: biomass in foliage; bark on the bole; and stumps (wood and bark) of timber species trees with DBH ≥ 5".
+
+Rather than predicting each product directly, the network predicts four ratios, and the products are calculated from those ratios and the input AGB:
+1. The fraction of AGB in the merchantable bole (sawtimber plus pulp). The remainder of AGB is the residual (submerchantable plus nonmerchantable).
+2. The fraction of the bole that is sawtimber. The rest of the bole is pulp.
+3. The fraction of the residual that is nonmerchantable. The rest of the residual is submerchantable.
+4. Boardfoot volume per metric ton of sawtimber biomass.
+
+The three fractions are bounded between 0 and 1 and the boardfoot ratio is bounded to be greater than or equal to zero. As a result, the four biomass products are never negative and always sum exactly to the input AGB.
+
+During training, each sample's error on each ratio is weighted by the size of the biomass pool the ratio divides (e.g., the error on the sawtimber fraction is weighted by bole biomass), so samples with more biomass in a pool contribute more to the fit for that pool. 
 
 Forest product estimates refer only to standing live biomass. The model does not characterize potentially-merchantable biomass in standing dead trees nor in downed dead wood.
 
@@ -61,41 +71,41 @@ Finally, this model allocates aboveground live tree biomass into four product ca
 ## Factors
 The key factors shaping the development and application of ForestProducts include reliance upon a forest structure model to generate the necessary forest attributes in wall-to-wall maps, and the definitions of forest product categories derived from the FIA program.  
 
-Biogeographic factors that influence tree form and the allocation of AGB into different product categories were incorporated by including forest type and ecoregion as key model inputs.
+Biogeographic factors that influence tree form and the allocation of AGB into different product categories are addressed in the model by including forest type group and ecoregion as model inputs.
 
 ## Metrics
-We evaluated model performance at plot scale using National Forest Inventory data. Model performance is reported using Mean Absolute Error (MAE), Root Mean Squared Error (RMSE), mean bias, R-squared (R²), and Pearson's R. Qualitative assessments were conducted through visual inspections of scatterplots of predicted versus observed values. 
+We evaluated model performance at subplot scale using National Forest Inventory data. Model performance is reported using Mean Absolute Error (MAE), Root Mean Squared Error (RMSE), mean bias, R-squared (R²), and Pearson's R. We also report the slope of a least-squares fit of observed on predicted values, which is 1 when predictions are neither compressed toward the mean nor spread too wide, and the ratio of the standard deviation of predictions to that of observations. Qualitative assessments were conducted through visual inspections of 2-D histograms of predicted versus observed values and comparisons of the distributions of predicted and observed values. Performance was also summarized separately for each forest type group and ecoregion.
 
 ## Evaluation data
 ### Datasets
-We utilized inventory data from publicly-available FIA databases for both model training and validation. These inventory data were coupled with a global delineation of ecoregions published [Dinerstein, et al. (2017)](https://doi.org/10.1093/biosci/bix014).
+We utilized inventory data from publicly-available FIA databases for both model training and evaluation. These inventory data were coupled with a global delineation of ecoregions published by [Dinerstein, et al. (2017)](https://doi.org/10.1093/biosci/bix014).
 
 ### Motivation
-The FIA program provides a systematic and spatially balanced inventory of forests across CONUS. The geographic expanse and diversity, sample size, and revisit frequency provide a robust data source for model development and validation. 
+The FIA program provides a systematic and spatially balanced inventory of forests across CONUS. The geographic expanse and diversity, sample size, and revisit frequency provide a robust data source for model development and validation.
 
 ### Preprocessing
-We extracted attributes from the FIA database including canopy cover, forest type group, canopy height, basal area, aboveground biomass, and quadratic mean diameter. The ecoregion for each sample was defined using a spatial join of the fuzzed FIA plot coordinates with the global ecoregions layer.
+We summarized live tree attributes from the FIA annual inventory across CONUS for each forested subplot, including aboveground biomass, basal area, maximum tree height, and the biomass in each forest product category, along with canopy cover and forest type group from the subplot's conditions. Trees recorded outside the subplot boundary (e.g., large trees measured on macroplots) were excluded, as were subplots without live trees. The ecoregion for each subplot was defined using a spatial join of the fuzzed FIA plot coordinates with the global ecoregions layer.
 
 ## Training data
-FIA inventory data were split into train (80%) and test (20%) partitions using a stratified sampling approach to retain the same balance of samples by forest type group and ecoregion in each partition.
+FIA subplots were split into training (70%), validation (15%), and test (15%) partitions. Partitions were assigned by 15 km grid tile, so that all subplots associated with an FIA plot, all revisits of a plot, and other plots that are nearby fall in the same partition. This limits the extent to which spatial autocorrelation between nearby samples inflates performance estimates. The validation partition was used for early stopping and checkpoint selection. The test partition was not used for model development, and was scored once for the release of this version.
 
 ## Data used at inference time
-At inference time, we relied upon the VibrantForests ForestStructure model to produce wall-to-wall estimates of AGB, basal area, quadratic mean diameter, canopy cover, and canopy height. These forest structure estimates were coupled with the ecoregions data layer and wall-to-wall estimates of Forest Type Groups from [FIA Bigmap](https://www.arcgis.com/home/item.html?id=4f78c504917a4f35b1c3191e94b5d565).
+At inference time, we rely upon the VibrantForests ForestStructure model to produce wall-to-wall estimates of AGB, basal area, canopy cover, and maximum canopy height. These forest structure estimates were coupled with the ecoregions data layer and wall-to-wall estimates of Forest Type Groups from [FIA Bigmap](https://www.arcgis.com/home/item.html?id=4f78c504917a4f35b1c3191e94b5d565).
 
 ## Quantitative analyses
-Performance evaluation across all forest type groups and ecoregions demonstrated precise estimates of forest product volumes in all categories, with minimal bias and high levels of correlation between observations and predictions for all product categories (Pearson R values from 0.78 to 0.98), and the vast majority of variance among samples explained for the sawlog, submerch, and nonmerch categories (R² values ranging from 0.88 to 0.95). A lower level of explained variance was observed for the pulp target (R²=0.31), which we believe to be related to the calculation of pulp biomass as the remainder of merchantable bolewood after subtracting sawlog biomass.
+Performance on the held-out test partition (216,712 subplots) showed minimal bias for all products and high correlation between observations and predictions (Pearson R from 0.75 to 0.98). Most of the variance among samples was explained for the sawtimber, submerchantable, nonmerchantable, and boardfoot volume targets (R² from 0.88 to 0.96). A lower level of explained variance was observed for pulp (R²=0.57), and pulp predictions appear compressed toward the mean with variance among predicted values about three quarters of the spread among observed values. We believe this is related to the calculation of pulp biomass as the remainder of merchantable bolewood after subtracting sawtimber biomass.
 
 | Target                    |   MAE |   RMSE |   Mean Bias |   R² |   Pearson R | Obs (Mean ± SD)   | Pred (Mean ± SD)   |
 |:--------------------------|------:|-------:|------------:|-----:|------------:|:------------------|:-------------------|
-| Sawlog Biomass (Mg/ha)    |  10.1 |   19.3 |       +0.47 | 0.95 |        0.98 | 46.2 ± 85.4       | 46.3 ± 87.3        |
-| Pulp Biomass (Mg/ha)      |   9.4 |   17.8 |       -0.68 | 0.31 |        0.78 | 25.4 ± 28.4       | 25.4 ± 28.3        |
-| Submerch Biomass (Mg/ha)  |   6.4 |   11.2 |       -0.35 | 0.88 |        0.95 | 38.2 ± 34.9       | 38.2 ± 34.8        |
-| Nonmerch Biomass (Mg/ha)  |   2.5 |    4.9 |       +0.55 | 0.95 |        0.98 | 20.4 ± 22.0       | 20.5 ± 22.3        |
-| Boardfoot Volume (MBF/ha) |   5.1 |   13.0 |       +0.14 | 0.91 |        0.96 | 20.0 ± 43.3       | 20.1 ± 44.7        |
+| Sawlog Biomass (Mg/ha)    |  10.6 |   19.7 |       +0.05 | 0.94 |        0.97 | 43.5 ± 83.4       | 43.6 ± 82.2        |
+| Pulp Biomass (Mg/ha)      |  10.5 |   18.3 |       -0.07 | 0.57 |        0.75 | 26.8 ± 27.8       | 26.7 ± 21.1        |
+| Submerch Biomass (Mg/ha)  |   7.1 |   12.1 |       -0.03 | 0.88 |        0.94 | 38.7 ± 34.6       | 38.6 ± 32.5        |
+| Nonmerch Biomass (Mg/ha)  |   2.3 |    4.4 |       +0.05 | 0.96 |        0.98 | 20.1 ± 21.8       | 20.2 ± 21.0        |
+| Boardfoot Volume (MBF/ha) |   4.9 |   10.2 |       -0.07 | 0.94 |        0.97 | 18.5 ± 42.9       | 18.5 ± 43.4        |
 
-| ![Overall performance evaluation of ForestProducts](https://vp-open-science.s3.us-west-2.amazonaws.com/model_cards/assets/VibrantForests/ForestProducts/1.0.0/overall_performance.png) |
+| ![Observed against predicted forest products on the test partition](https://vp-open-science.s3.us-west-2.amazonaws.com/model_cards/assets/VibrantForests/ForestProducts/2.0.0/observed_against_predicted_test.png) |
 | :-- |
-| The graphics above display 2-D histograms of observed and predicted forest product volumes using a heatmap, with higher densities of samples displayed in red and lower densities of samples in dark blue. The 1:1 line indicating perfect correspondence between predictions and observations is overlaid diagonally in each graphic as a red dashed line. |
+| The top row displays 2-D histograms of observed against predicted values for each product on the test partition, with higher densities of samples in lighter colors. The 1:1 line indicating perfect correspondence between predictions and observations is shown as a black dashed line, and a least-squares fit of observed on predicted values as a red line. The bottom row compares the distributions of observed and predicted values. |
 
 ## Ethical considerations
 The data used and generated by ForestProducts are not considered sensitive nor to pose substantial risks to human health or safety. The data are intended to be instrumental in decision-making that may indirectly enable human health and safety to be better protected through more cost-effective and targeted wildfire and forest restoration planning. Similar data sources already exist at lower resolution and periodic update frequency produced by the US Forest Service (e.g., [TreeMap by Riley et al. 2021](https://www.nature.com/articles/s41597-020-00782-x)), and more precise maps of forest product volumes are commonly generated in public and private sectors based on lidar data.
