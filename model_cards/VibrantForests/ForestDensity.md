@@ -88,7 +88,7 @@ We summarized FIA observations of stem density, tree size, to the plot scale, al
 During training, the features used as inputs to ForestDensity were the quadratic mean diameter of live trees on each plot, the proportion of live tree basal area for each plot component, and the region of the plot. At inference time, the inputs to ForestDensity are raster arrays. Estimates of current SDI were derived from predictions of basal area and quadratic mean diameter produced by VibrantForests' ForestStructure model, and predictions of forest composition were adapted from the FIA Bigmap Forest Type Group layer. 
 
 ### Targets
-At training time, the target for ForestDensity was the 90<sup>th</sup> percentile of the natural log of trees per hectare (TPH). This metric was also translated into an estimate of SDI<sub>max</sub> as $e^{\alpha + \beta*25.4}$ where 25.4 cm is the standard reference diameter used in calculating SDI. At inference time, the model generates four output arrays: SDI, SDI<sub>max</sub>, RD, and TPH. 
+At training time, the target for ForestDensity was the 90<sup>th</sup> percentile of the natural log of trees per hectare (TPH). This metric was also translated into an estimate of SDI<sub>max</sub> as $e^{\alpha + \beta*ln(25.4)}$ where 25.4 cm is the standard reference diameter used in calculating SDI. At inference time, the model generates four output arrays: SDI, SDI<sub>max</sub>, RD, and TPH. 
 
 ## Training process
 The MSDR model was defined using the [Numpyro](https://doi.org/10.48550/arXiv.1912.11554) probabilistic programming library. It was fitted using Stochastic Variational Inference (SVI) to identify the *maximum a posteriori* values of the slope and intercept terms for each component and region. 
